@@ -22,6 +22,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         process::exit(1);
     });
 
+    let model = env::var("LOCAL_MODEL").unwrap_or("anthropic/claude-haiku-4.5".to_string());
+
     let config = OpenAIConfig::new()
         .with_api_base(base_url)
         .with_api_key(api_key);
@@ -38,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "content": args.prompt
                 }
             ],
-            "model": "anthropic/claude-haiku-4.5",
+            "model": model,
         }))
         .await?;
 
@@ -46,9 +48,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Logs from your program will appear here!");
 
     // TODO: Uncomment the lines below to pass the first stage
-    // if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
-    //     println!("{}", content);
-    // }
+    if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
+        println!("{}", content);
+    }
 
     Ok(())
 }
