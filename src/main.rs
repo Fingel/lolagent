@@ -14,10 +14,13 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let base_url =
-        env::var("OPENROUTER_BASE_URL").unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
+    let base_url = env::var("OPENROUTER_BASE_URL")
+        .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
 
-    let api_key = env::var("OPENROUTER_API_KEY").unwrap_or_else(|_| "foo".to_string());
+    let api_key = env::var("OPENROUTER_API_KEY").unwrap_or_else(|_| {
+        eprintln!("OPENROUTER_API_KEY is not set");
+        process::exit(1);
+    });
 
     let config = OpenAIConfig::new()
         .with_api_base(base_url)
@@ -35,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "content": args.prompt
                 }
             ],
-            "model": "qwen3:14b",
+            "model": "anthropic/claude-haiku-4.5",
         }))
         .await?;
 
@@ -43,9 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Logs from your program will appear here!");
 
     // TODO: Uncomment the lines below to pass the first stage
-    if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
-        println!("{}", content);
-    }
+    // if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
+    //     println!("{}", content);
+    // }
 
     Ok(())
 }
