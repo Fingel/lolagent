@@ -1,7 +1,85 @@
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
+use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{env, process};
+use std::{env, error::Error, process};
+
+#[derive(Debug)]
+pub enum ToolError {
+    InvalidTool,
+    ExecutionFailed,
+    InvalidArguments(String),
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolError::InvalidTool => write!(f, "Invalid tool specified"),
+            ToolError::ExecutionFailed => write!(f, "Tool execution failed"),
+            ToolError::InvalidArguments(msg) => write!(f, "Invalid arguments: {}", msg),
+        }
+    }
+}
+
+impl Error for ToolError {}
+
+#[derive(Debug, Deserialize)]
+struct Response {
+    choices: Vec<Choice>,
+}
+
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+struct Choice {
+    index: usize,
+    message: Message,
+}
+
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+struct Message {
+    role: String,
+    content: String,
+    tool_calls: Option<Vec<ToolCall>>,
+}
+
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+struct ToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    _type: String,
+    function: Function,
+}
+
+#[derive(Debug, Deserialize)]
+struct Function {
+    name: String,
+    #[serde(deserialize_with = "deserialize_json_string")]
+    arguments: Value,
+}
+
+pub enum Tools {
+    Read(String),
+}
+
+impl Tools {
+    fn execute(&self) -> Result<String, ToolError> {
+        match self {
+            Tools::Read(file_path) => {
+                std::fs::read_to_string(file_path).map_err(|_| ToolError::ExecutionFailed)
+            }
+        }
+    }
+}
+
+fn deserialize_json_string<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    serde_json::from_str(&s).map_err(serde::de::Error::custom)
+}
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -63,12 +141,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .await?;
 
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    eprintln!("Logs from your program will appear here!");
-
     // TODO: Uncomment the lines below to pass the first stage
     if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
-        println!("{}", content);
+        print!("{}", content);
+    }
+
+    let s_response: Response = serde_json::from_value(response).unwrap();
+
+    if let Some(tool_calls) = s_response.choices[0].message.tool_calls.as_ref() {
+        for tool_call in tool_calls {
+            let tool = match tool_call.function.name.as_str() {
+                "Read" => match tool_call.function.arguments["file_path"].as_str() {
+                    Some(path) => Tools::Read(path.to_string()),
+                    None => {
+                        return Err(ToolError::InvalidArguments(
+                            tool_call.function.arguments.to_string(),
+                        )
+                        .into());
+                    }
+                },
+                _ => continue,
+            };
+            let resp = tool.execute()?;
+            print!("{}", resp);
+        }
     }
 
     Ok(())
