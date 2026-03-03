@@ -1,6 +1,6 @@
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{env, error::Error, process};
 
@@ -33,18 +33,19 @@ struct Response {
 struct Choice {
     index: usize,
     message: Message,
+    finish_reason: String,
 }
 
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
 struct Message {
     role: String,
-    content: String,
+    content: Option<String>,
     tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[allow(unused)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ToolCall {
     id: String,
     #[serde(rename = "type")]
@@ -52,10 +53,13 @@ struct ToolCall {
     function: Function,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Function {
     name: String,
-    #[serde(deserialize_with = "deserialize_json_string")]
+    #[serde(
+        deserialize_with = "deserialize_json_string",
+        serialize_with = "serialize_json_string"
+    )]
     arguments: Value,
 }
 
@@ -79,6 +83,14 @@ where
 {
     let s = String::deserialize(deserializer)?;
     serde_json::from_str(&s).map_err(serde::de::Error::custom)
+}
+
+fn serialize_json_string<S>(value: &Value, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let s = serde_json::to_string(value).map_err(serde::ser::Error::custom)?;
+    serializer.serialize_str(&s)
 }
 
 #[derive(Parser)]
@@ -108,62 +120,96 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::with_config(config);
 
-    #[allow(unused_variables)]
-    let response: Value = client
-        .chat()
-        .create_byot(json!({
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "Read",
-                        "description": "Read and return the contents of a file",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "file_path": {
-                                    "type": "string",
-                                    "description": "The path to the file to read"
-                                }
+    let mut messages = vec![json!({
+        "role": "user",
+        "content": args.prompt
+    })];
+
+    loop {
+        let response: Value = client
+            .chat()
+            .create_byot(json!({
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "Read",
+                            "description": "Read and return the contents of a file",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "file_path": {
+                                        "type": "string",
+                                        "description": "The path to the file to read"
+                                    }
+                                },
+                                "required": ["file_path"]
                             }
-                        },
-                        "required": ["file_path"]
+                        }
                     }
-                }
-            ],
-            "messages": [
-                {
-                    "role": "user",
-                    "content": args.prompt
-                }
-            ],
-            "model": model,
-        }))
-        .await?;
+                ],
+                "messages": messages,
+                "model": model,
+            }))
+            .await?;
 
-    // TODO: Uncomment the lines below to pass the first stage
-    if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
-        print!("{}", content);
-    }
+        let s_response: Response = serde_json::from_value(response).unwrap();
+        if s_response.choices[0].finish_reason == "stop" {
+            print!(
+                "{}",
+                s_response.choices[0]
+                    .message
+                    .content
+                    .clone()
+                    .unwrap_or_default()
+            );
+            break;
+        }
 
-    let s_response: Response = serde_json::from_value(response).unwrap();
-
-    if let Some(tool_calls) = s_response.choices[0].message.tool_calls.as_ref() {
-        for tool_call in tool_calls {
-            let tool = match tool_call.function.name.as_str() {
-                "Read" => match tool_call.function.arguments["file_path"].as_str() {
-                    Some(path) => Tools::Read(path.to_string()),
-                    None => {
-                        return Err(ToolError::InvalidArguments(
-                            tool_call.function.arguments.to_string(),
-                        )
-                        .into());
-                    }
-                },
-                _ => continue,
-            };
-            let resp = tool.execute()?;
-            print!("{}", resp);
+        if let Some(tool_calls) = s_response.choices[0].message.tool_calls.as_ref()
+            && !tool_calls.is_empty()
+        {
+            messages.push(json!({
+                "role": "assistant",
+                "content": Value::Null,
+                "tool_calls": s_response.choices[0].message.tool_calls
+            }));
+            eprintln!("{:?}", tool_calls);
+            for tool_call in tool_calls {
+                let tool = match tool_call.function.name.as_str() {
+                    "Read" => match tool_call.function.arguments["file_path"].as_str() {
+                        Some(path) => Tools::Read(path.to_string()),
+                        None => {
+                            return Err(ToolError::InvalidArguments(
+                                tool_call.function.arguments.to_string(),
+                            )
+                            .into());
+                        }
+                    },
+                    _ => continue,
+                };
+                let resp = tool.execute()?;
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id.clone(),
+                    "content": resp,
+                }));
+                eprintln!("messages: {:?}", messages);
+            }
+        } else {
+            messages.push(json!({
+                "role": "assistant",
+                "content": s_response.choices[0].message.content.clone().unwrap_or_default(),
+            }));
+            print!(
+                "{}",
+                s_response.choices[0]
+                    .message
+                    .content
+                    .clone()
+                    .unwrap_or_default()
+            );
+            break;
         }
     }
 
