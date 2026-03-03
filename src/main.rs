@@ -65,6 +65,7 @@ struct Function {
 
 pub enum Tools {
     Read(String),
+    Write(String, String),
 }
 
 impl Tools {
@@ -72,6 +73,10 @@ impl Tools {
         match self {
             Tools::Read(file_path) => {
                 std::fs::read_to_string(file_path).map_err(|_| ToolError::ExecutionFailed)
+            }
+            Tools::Write(file_path, content) => {
+                std::fs::write(file_path, content).map_err(|_| ToolError::ExecutionFailed)?;
+                Ok("Write successful".to_string())
             }
         }
     }
@@ -137,13 +142,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "description": "Read and return the contents of a file",
                             "parameters": {
                                 "type": "object",
+                                "required": ["file_path"],
                                 "properties": {
                                     "file_path": {
                                         "type": "string",
                                         "description": "The path to the file to read"
                                     }
                                 },
-                                "required": ["file_path"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "Write",
+                            "description": "Write content to a file",
+                            "parameters": {
+                                "type": "object",
+                                "required": ["file_path"],
+                                "properties": {
+                                    "file_path": {
+                                        "type": "string",
+                                        "description": "The path to the file to read"
+                                    },
+                                    "content": {
+                                        "type": "string",
+                                        "description": "The content to write to the file"
+                                    }
+                                },
                             }
                         }
                     }
@@ -176,16 +202,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
             eprintln!("{:?}", tool_calls);
             for tool_call in tool_calls {
+                let args = &tool_call.function.arguments;
+                let arg = |key| {
+                    args[key]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments(args.to_string()))
+                };
                 let tool = match tool_call.function.name.as_str() {
-                    "Read" => match tool_call.function.arguments["file_path"].as_str() {
-                        Some(path) => Tools::Read(path.to_string()),
-                        None => {
-                            return Err(ToolError::InvalidArguments(
-                                tool_call.function.arguments.to_string(),
-                            )
-                            .into());
-                        }
-                    },
+                    "Read" => Tools::Read(arg("file_path")?.to_string()),
+                    "Write" => {
+                        Tools::Write(arg("file_path")?.to_string(), arg("content")?.to_string())
+                    }
                     _ => continue,
                 };
                 let resp = tool.execute()?;
