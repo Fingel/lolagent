@@ -66,6 +66,7 @@ struct Function {
 pub enum Tools {
     Read(String),
     Write(String, String),
+    Bash(String),
 }
 
 impl Tools {
@@ -77,6 +78,18 @@ impl Tools {
             Tools::Write(file_path, content) => {
                 std::fs::write(file_path, content).map_err(|_| ToolError::ExecutionFailed)?;
                 Ok("Write successful".to_string())
+            }
+            Tools::Bash(command) => {
+                let output = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(command)
+                    .output()
+                    .map_err(|_| ToolError::ExecutionFailed)?;
+                if output.status.success() {
+                    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+                } else {
+                    Err(ToolError::ExecutionFailed)
+                }
             }
         }
     }
@@ -172,6 +185,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 },
                             }
                         }
+                    },
+                    {
+                      "type": "function",
+                      "function": {
+                        "name": "Bash",
+                        "description": "Execute a shell command",
+                        "parameters": {
+                          "type": "object",
+                          "required": ["command"],
+                          "properties": {
+                            "command": {
+                              "type": "string",
+                              "description": "The command to execute"
+                            }
+                          }
+                        }
+                      }
                     }
                 ],
                 "messages": messages,
@@ -200,7 +230,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "content": Value::Null,
                 "tool_calls": s_response.choices[0].message.tool_calls
             }));
-            eprintln!("{:?}", tool_calls);
             for tool_call in tool_calls {
                 let args = &tool_call.function.arguments;
                 let arg = |key| {
@@ -213,6 +242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "Write" => {
                         Tools::Write(arg("file_path")?.to_string(), arg("content")?.to_string())
                     }
+                    "Bash" => Tools::Bash(arg("command")?.to_string()),
                     _ => continue,
                 };
                 let resp = tool.execute()?;
@@ -221,7 +251,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "tool_call_id": tool_call.id.clone(),
                     "content": resp,
                 }));
-                eprintln!("messages: {:?}", messages);
             }
         } else {
             messages.push(json!({
